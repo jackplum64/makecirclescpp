@@ -11,7 +11,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <atomic>
+#include <iomanip>
+#include <sstream>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -427,6 +428,13 @@ void loadConfig(const std::string& filename, int& width, int& height, int& numOu
 }
 
 
+std::string formatFloat(float value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << value;
+    return out.str();
+}
+
+
 std::queue<int> taskQueue;
 std::mutex queueMutex;
 std::condition_variable condVar;
@@ -498,7 +506,18 @@ int main(int argc, char* argv[]) {
 
     std::string executablePath = getExecutablePath();
     std::string parentDir = cv::utils::fs::getParent(executablePath);
-    std::string outputDir = parentDir + "/output";
+    std::string baseOutputDir = parentDir + "/output";
+
+    // Create the base output directory if it doesn't exist
+    cv::utils::fs::createDirectory(baseOutputDir);
+
+    // Create a directory name based on the statistics with two decimal places
+    std::string outputDir = baseOutputDir + "/output_"
+                            + "g1_mean_" + formatFloat(g1Mean) + "_std_" + formatFloat(g1Std_dev)
+                            + "_g2_mean_" + formatFloat(g2Mean) + "_std_" + formatFloat(g2Std_dev);
+
+    // Create the detailed output directory
+    cv::utils::fs::createDirectory(outputDir);
 
     // Populate the task queue
     for (int i = 0; i < numOutputs; ++i) {

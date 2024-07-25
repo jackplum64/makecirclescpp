@@ -15,12 +15,13 @@ This project generates images of circles with specified statistical properties u
 ## Usage
 
 ### Compilation
-1. Clone the repository and navigate to the root directory:
+1. Install Dependencies
+2. Clone the repository and navigate to the root directory:
    ```sh
    git clone https://github.com/jackplum64/makecirclescpp.git
    cd makecirclescpp
    ```
-2. Run `make` to build the project:
+3. Run `make` to build the project:
    ```sh
    make
    ```

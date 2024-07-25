@@ -17,8 +17,8 @@ This project generates images of circles with specified statistical properties u
 ### Compilation
 1. Clone the repository and navigate to the root directory:
    ```sh
-   git clone <repository_url>
-   cd <repository_name>
+   git clone https://github.com/jackplum64/makecirclescpp.git
+   cd makecirclescpp
    ```
 2. Run `make` to build the project:
    ```sh
@@ -40,12 +40,13 @@ The configuration file contains parameters for the image dimensions, the number 
 # GENERAL #
 width=1000 # int - image width
 height=1000 # int - image height
-numOutputs=1 # int - number of generated images
+numOutputs=12 # int - number of generated images
+
 
 # GROUP 1 #
-group1_mean=73.0 # float - target mean
+group1_mean=73.0 # float - target radius mean
 group1_mean_delta=0.5 # float - max allowed difference between target mean and actual mean
-group1_std_dev=32.0 # float - target std_dev
+group1_std_dev=32.0 # float - target radius std_dev
 group1_std_dev_delta=0.5 # float - max allowed difference between target std_dev and actual std_dev
 group1_count=36 # int - number of circles
 
@@ -53,10 +54,11 @@ group1_color_r=0 # int - 0 to 255
 group1_color_g=0 # int - 0 to 255
 group1_color_b=255 # int - 0 to 255
 
+
 # GROUP 2 #
-group2_mean=10.0 # float - target mean
+group2_mean=10.0 # float - target radius mean
 group2_mean_delta=0.5 # float - max allowed difference between target mean and actual mean
-group2_std_dev=6.0 # float - target std_dev
+group2_std_dev=6.0 # float - target radius std_dev
 group2_std_dev_delta=0.5 # float - max allowed difference between target std_dev and actual std_dev
 group2_count=86 # int - number of circles
 
@@ -74,5 +76,5 @@ The generated images will be saved in the `output` directory within the parent d
 
 ### Example
 For a configuration with `numOutputs=1`, the following files will be generated:
-- `output/circles_0.png`: Original image.
-- `output/circles_blurred_0.png`: Blurred image.
+- `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_0.png`: Original image.
+- `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_blurred_0.png`: Blurred image.

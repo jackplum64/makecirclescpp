@@ -29,7 +29,7 @@ This project generates images of circles with specified statistical properties u
 1. Ensure you have the configuration file (`config.ini`) in the same directory as the executable or specify the path.
 2. Run the executable with the configuration file:
    ```sh
-   ./makecircles -config config.ini
+   ./makecircles -config path/to/config.ini
    ```
 3. The program will generate the specified number of images and save them in the `output` directory within the parent directory of the executable.
 

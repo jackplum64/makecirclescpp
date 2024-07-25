@@ -78,3 +78,4 @@ The generated images will be saved in the `output` directory within the parent d
 For a configuration with `numOutputs=1`, the following files will be generated:
 - `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_0.png`: Original image.
 - `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_blurred_0.png`: Blurred image.
+Note, your output directory name will change with the inputs in config.ini

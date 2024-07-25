@@ -514,7 +514,9 @@ int main(int argc, char* argv[]) {
     // Create a directory name based on the statistics with two decimal places
     std::string outputDir = baseOutputDir + "/output_"
                             + "g1_mean_" + formatFloat(g1Mean) + "_std_" + formatFloat(g1Std_dev)
-                            + "_g2_mean_" + formatFloat(g2Mean) + "_std_" + formatFloat(g2Std_dev);
+                            + "_g1_count_" + std::to_string(g1Count) // Add group 1 count
+                            + "_g2_mean_" + formatFloat(g2Mean) + "_std_" + formatFloat(g2Std_dev)
+                            + "_g2_count_" + std::to_string(g2Count); // Add group 2 count
 
     // Create the detailed output directory
     cv::utils::fs::createDirectory(outputDir);

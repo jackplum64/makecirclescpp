@@ -73,9 +73,9 @@ group2_color_b=0 # int - 0 to 255
 
 ## Output
 The generated images will be saved in the `output` directory within the parent directory of the executable. Each image will be saved twice: once in its original form and once with a Gaussian blur applied.
+Within the output directory will be a second directory which will be called `output_...` where ... is the mean, std_dev, and count of both g1 and g2 for the images it contains.
 
 ### Example
 For a configuration with `numOutputs=1`, the following files will be generated:
 - `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_0.png`: Original image.
 - `output/output_g1_mean_73.00_std_32.00_g1_count_36_g2_mean_10.00_std_6.00_g2_count_86/circles_blurred_0.png`: Blurred image.
-Note, your output directory name will change with the inputs in config.ini

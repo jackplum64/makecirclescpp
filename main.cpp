@@ -7,11 +7,18 @@
 #include <memory>
 #include <fstream>
 #include <unistd.h>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/core/utils/filesystem.hpp>
+
+
 
 class Circle
 {
@@ -41,6 +48,8 @@ private:
     float radius;
     int x, y;
 };
+
+
 
 class Grid
 {
@@ -129,6 +138,8 @@ private:
         return cellY * numCellsX + cellX;
     }
 };
+
+
 
 class CircleGroup
 {
@@ -334,6 +345,7 @@ void saveImage(const cv::Mat& image, const std::string& outputDir, int index) {
     cv::imwrite(blurredFilename, blurredImage);
 }
 
+
 void drawGridLines(cv::Mat& image, const Grid& grid) {
     int numCellsX = grid.getNumCellsX();
     int numCellsY = grid.getNumCellsY();
@@ -348,12 +360,14 @@ void drawGridLines(cv::Mat& image, const Grid& grid) {
     }
 }
 
+
 void drawCircles(cv::Mat& image, const std::vector<Circle>& circles, cv::Scalar color) {
     for (const auto& circle : circles) {
         cv::circle(image, cv::Point(circle.getX(), circle.getY()), circle.getRadius(), color, -1);
         cv::circle(image, cv::Point(circle.getX(), circle.getY()), 1, color, -1);
     }
 }
+
 
 std::string getExecutablePath() {
     char buffer[1024];
@@ -364,6 +378,7 @@ std::string getExecutablePath() {
     }
     return "";
 }
+
 
 void loadConfig(const std::string& filename, int& width, int& height, int& numOutputs, float& g1Mean, float& g1Mean_delta, float& g1Std_dev, float& g1Std_dev_delta, int& g1Count, cv::Scalar& g1Color, float& g2Mean, float& g2Mean_delta, float& g2Std_dev, float& g2Std_dev_delta, int& g2Count, cv::Scalar& g2Color) {
     std::ifstream file(filename);
@@ -411,6 +426,52 @@ void loadConfig(const std::string& filename, int& width, int& height, int& numOu
     }
 }
 
+
+std::queue<int> taskQueue;
+std::mutex queueMutex;
+std::condition_variable condVar;
+bool stopThreads = false;
+
+void workerFunction(int width, int height, float g1Mean, float g1Mean_delta, float g1Std_dev, float g1Std_dev_delta, int g1Count, cv::Scalar g1Color,
+                    float g2Mean, float g2Mean_delta, float g2Std_dev, float g2Std_dev_delta, int g2Count, cv::Scalar g2Color, const std::string& outputDir, int totalTasks) {
+    while (true) {
+        int taskIndex;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            condVar.wait(lock, []{ return !taskQueue.empty() || stopThreads; });
+
+            if (stopThreads && taskQueue.empty()) {
+                return;
+            }
+
+            taskIndex = taskQueue.front();
+            taskQueue.pop();
+        }
+
+        // Generate the circles and images
+        CircleGroup g1(width, height, g1Mean, g1Mean_delta, g1Std_dev, g1Std_dev_delta, g1Count);
+        const std::vector<Circle>& g1Circles = g1.getCircles();
+        CircleGroup g2(width, height, g2Mean, g2Mean_delta, g2Std_dev, g2Std_dev_delta, g2Count, g1Circles);
+        const std::vector<Circle>& g2Circles = g2.getCircles();
+
+        cv::Mat g1Image = cv::Mat::zeros(height, width, CV_8UC3);
+        cv::Mat g2Image = cv::Mat::zeros(height, width, CV_8UC3);
+        drawCircles(g1Image, g1Circles, g1Color);
+        drawCircles(g2Image, g2Circles, g2Color);
+
+        cv::Mat finalImage;
+        cv::addWeighted(g1Image, 1, g2Image, 1, 0, finalImage, -1);
+        saveImage(finalImage, outputDir, taskIndex);
+
+        std::cout << "Finished " << taskIndex + 1 << "/" << totalTasks << std::endl;
+
+        if (taskIndex + 1 == totalTasks) {
+            stopThreads = true;
+            condVar.notify_all();
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3 || std::string(argv[1]) != "-config") {
         std::cerr << "Usage: " << argv[0] << " -config <config_path>" << std::endl;
@@ -435,34 +496,24 @@ int main(int argc, char* argv[]) {
               << "GROUP 2 - " << "Mean: " << g2Mean << ", Mean delta: " << g2Mean_delta << ", Std dev: " << g2Std_dev << ", Std dev delta: " << g2Std_dev_delta << ", Count: " << g2Count << std::endl;
     std::cout << std::endl;
 
-    // Get the executable path and construct the output directory path
     std::string executablePath = getExecutablePath();
     std::string parentDir = cv::utils::fs::getParent(executablePath);
     std::string outputDir = parentDir + "/output";
 
-    // Generate images numOutputs times
+    // Populate the task queue
     for (int i = 0; i < numOutputs; ++i) {
-        CircleGroup g1(width, height, g1Mean, g1Mean_delta, g1Std_dev, g1Std_dev_delta, g1Count);
-        const std::vector<Circle>& g1Circles = g1.getCircles();
-        CircleGroup g2(width, height, g2Mean, g2Mean_delta, g2Std_dev, g2Std_dev_delta, g2Count, g1Circles);
-        const std::vector<Circle>& g2Circles = g2.getCircles();
+        taskQueue.push(i);
+    }
 
-        // Create blank black images
-        cv::Mat g1Image = cv::Mat::zeros(height, width, CV_8UC3);
-        cv::Mat g2Image = cv::Mat::zeros(height, width, CV_8UC3);
+    int numThreads = std::thread::hardware_concurrency();
+    std::vector<std::thread> workers;
 
-        // Draw circles on the images
-        drawCircles(g1Image, g1Circles, g1Color);
-        drawCircles(g2Image, g2Circles, g2Color);
+    for (int i = 0; i < numThreads; ++i) {
+        workers.emplace_back(workerFunction, width, height, g1Mean, g1Mean_delta, g1Std_dev, g1Std_dev_delta, g1Count, g1Color, g2Mean, g2Mean_delta, g2Std_dev, g2Std_dev_delta, g2Count, g2Color, outputDir, numOutputs);
+    }
 
-        // Combine the images
-        cv::Mat finalImage;
-        cv::addWeighted(g1Image, 1, g2Image, 1, 0, finalImage, -1);
-
-        // Save the original and blurred images
-        saveImage(finalImage, outputDir, i);
-
-        std::cout << "Finished " << i+1 << "/" << numOutputs << std::endl;
+    for (auto& worker : workers) {
+        worker.join();
     }
 
     auto end = std::chrono::high_resolution_clock::now();

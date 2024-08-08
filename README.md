@@ -1,5 +1,5 @@
 # Circle Packing Image Generation Project
-
+![circles_0](https://github.com/user-attachments/assets/1b6830d5-885e-4e51-835d-41809b2a1c3a)
 ## Overview
 This project generates images of circles with specified statistical properties using a circle packing algorithm. The circles are generated in two groups with different properties, and the images are saved both in their original and blurred forms. The project uses OpenCV for image processing and rendering.
 

@@ -9,7 +9,7 @@ This project generates images of circles with specified statistical properties u
 ## Project Structure
 - `main.cpp`: The main program file containing the circle generation, packing, and image saving logic.
 - `config.ini`: Configuration file specifying the properties for circle generation and image dimensions.
-- `CMakeLists.txt`: CMake build script.
+- `makefile`: Makefile to compile project.
 - `README.md`: Project documentation.
 
 ## Usage

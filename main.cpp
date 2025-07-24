@@ -198,7 +198,7 @@ private:
 
         for(auto &s : sph){
             bool placed = false;
-            int attempts = 0, maxAtt=500000;
+            int attempts = 0, maxAtt=10000000;
             while(!placed && attempts<maxAtt){
                 ++attempts;
                 int x = dx(gen), y=dy(gen), z=dz(gen);
@@ -235,18 +235,32 @@ private:
     }
 
     // check against `excl` list (fully contained)
-    bool overlapExcl(int x,int y,int z,float rnew) const {
-        for(auto &o: excl){
-            float dx = o.getX()-x,
-                  dy = o.getY()-y,
-                  dz = o.getZ()-z;
-            float d2 = dx*dx+dy*dy+dz*dz;
-            float dr = std::fabs(o.radius()-rnew);
-            if(d2 <= dr*dr) return true;
+    bool overlapExcl(int x, int y, int z, float rnew) const {
+        for (const auto &o : excl) {
+            // distances in pixels
+            float dx   = o.getX() - x;      // px
+            float dy   = o.getY() - y;      // px
+            float dz   = o.getZ() - z;      // px
+            // sum of radii in pixels
+            float Rsum = o.radius() + rnew; // px
+            // if centers closer than sum of radii → overlap
+            if (dx*dx + dy*dy + dz*dz <= Rsum*Rsum)
+                return true;
         }
         return false;
     }
 };
+
+
+struct SphereMode {
+    float  mean_r;       // px
+    float  mean_tol;     // px
+    float  std_r;        // px
+    float  std_tol;      // px
+    int    count;
+    cv::Scalar color;    // BGR
+};
+
 
 void writeXYZR(const std::string& filepath, const std::vector<Sphere>& spheres) {
     std::ofstream ofs(filepath);
@@ -295,47 +309,49 @@ std::string getExecutablePath() {
 void loadConfig(const std::string &filename,
                 int &W, int &H, int &D,
                 int &numOutputs,
-                float &g1Mean, float &g1MeanDelta,
-                float &g1Std, float &g1StdDelta,
-                int &g1Count, cv::Scalar &g1Color,
-                float &g2Mean, float &g2MeanDelta,
-                float &g2Std, float &g2StdDelta,
-                int &g2Count, cv::Scalar &g2Color,
-                bool &enableGroup2)
+                int &modeCount,
+                std::vector<SphereMode> &modes)
 {
     std::ifstream file(filename);
-    if (!file)
-        throw std::runtime_error("Cannot open config: " + filename);
-    std::string line;
-    while (std::getline(file, line)) {
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+    if (!file) throw std::runtime_error("Cannot open config: " + filename);
+
+    // first pass: load simple scalars, including mode_count
+    std::map<std::string,std::string> kv;
+    for (std::string line; std::getline(file, line); ) {
+        auto trim = [](std::string &s){
+            s.erase(0, s.find_first_not_of(" \t\r\n"));
+            s.erase(s.find_last_not_of(" \t\r\n")+1);
+        };
+        trim(line);
         if (line.empty() || line[0]=='#') continue;
-        std::istringstream iss(line);
-        std::string key, val;
-        if (std::getline(iss, key, '=') && std::getline(iss, val)) {
-            if (key=="width")        W = std::stoi(val);
-            else if (key=="height")  H = std::stoi(val);
-            else if (key=="depth")   D = std::stoi(val);
-            else if (key=="numOutputs") numOutputs = std::stoi(val);
-            else if (key=="group1_mean")           g1Mean      = std::stof(val);
-            else if (key=="group1_mean_delta")     g1MeanDelta = std::stof(val);
-            else if (key=="group1_std_dev")        g1Std       = std::stof(val);
-            else if (key=="group1_std_dev_delta")  g1StdDelta  = std::stof(val);
-            else if (key=="group1_count")          g1Count     = std::stoi(val);
-            else if (key=="group1_color_r")        g1Color[2]  = std::stoi(val);
-            else if (key=="group1_color_g")        g1Color[1]  = std::stoi(val);
-            else if (key=="group1_color_b")        g1Color[0]  = std::stoi(val);
-            else if (key=="group2_mean")           g2Mean      = std::stof(val);
-            else if (key=="group2_mean_delta")     g2MeanDelta = std::stof(val);
-            else if (key=="group2_std_dev")        g2Std       = std::stof(val);
-            else if (key=="group2_std_dev_delta")  g2StdDelta  = std::stof(val);
-            else if (key=="group2_count")          g2Count     = std::stoi(val);
-            else if (key=="group2_color_r")        g2Color[2]  = std::stoi(val);
-            else if (key=="group2_color_g")        g2Color[1]  = std::stoi(val);
-            else if (key=="group2_color_b")        g2Color[0]  = std::stoi(val);
-            else if (key=="enable_group2")         enableGroup2 = (val=="1"||val=="true");
-        }
+        auto eq = line.find('=');
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq+1);
+        trim(key); trim(val);
+        kv[key] = val;
+    }
+
+    W          = std::stoi(kv["width"]);
+    H          = std::stoi(kv["height"]);
+    D          = std::stoi(kv["depth"]);
+    numOutputs = std::stoi(kv["numOutputs"]);
+    modeCount  = std::stoi(kv["mode_count"]);
+
+    modes.clear();
+    modes.reserve(modeCount);
+    for (int i = 1; i <= modeCount; ++i) {
+        SphereMode m{};
+        m.mean_r   = std::stof(kv["mode" + std::to_string(i) + "_mean"]);
+        m.mean_tol = std::stof(kv["mode" + std::to_string(i) + "_mean_delta"]);
+        m.std_r    = std::stof(kv["mode" + std::to_string(i) + "_std_dev"]);
+        m.std_tol  = std::stof(kv["mode" + std::to_string(i) + "_std_dev_delta"]);
+        m.count    = std::stoi(kv["mode" + std::to_string(i) + "_count"]);
+        // load colors as R,G,B
+        int r = std::stoi(kv["mode" + std::to_string(i) + "_color_r"]);
+        int g = std::stoi(kv["mode" + std::to_string(i) + "_color_g"]);
+        int b = std::stoi(kv["mode" + std::to_string(i) + "_color_b"]);
+        m.color = cv::Scalar(b, g, r);
+        modes.push_back(m);
     }
 }
 
@@ -353,13 +369,7 @@ std::condition_variable condVar;
 bool stopThreads = false;
 
 void workerFunction(int W, int H, int D,
-                    float g1Mean, float g1MeanDelta,
-                    float g1Std,  float g1StdDelta,
-                    int g1Count,  cv::Scalar g1Color,
-                    float g2Mean, float g2MeanDelta,
-                    float g2Std,  float g2StdDelta,
-                    int g2Count,  cv::Scalar g2Color,
-                    bool enableGroup2,
+                    std::shared_ptr<std::vector<SphereMode>> modesPtr,
                     const std::string &outDir,
                     int totalTasks)
 {
@@ -372,28 +382,51 @@ void workerFunction(int W, int H, int D,
             idx = taskQueue.front(); taskQueue.pop();
         }
 
-        SphereGroup sg1(W,H,D, g1Mean,g1MeanDelta, g1Std,g1StdDelta, g1Count);
-        auto s1 = sg1.spheres();
+        // We’ll keep a growing list of “already placed” to exclude
+        std::vector<Sphere> placedExcl;
+        // And collect per-mode spheres for drawing:
+        std::vector<std::vector<Sphere>> allGroups;
+        allGroups.reserve(modesPtr->size());
 
-        std::vector<Sphere> all = s1;
-        if (enableGroup2) {
-            SphereGroup sg2(W,H,D, g2Mean,g2MeanDelta, g2Std,g2StdDelta, g2Count, s1);
-            auto s2 = sg2.spheres();
-            all.insert(all.end(), s2.begin(), s2.end());
+        // sample each mode in turn, excluding previously placed
+        for (auto &m : *modesPtr) {
+            SphereGroup sg(W, H, D,
+                           m.mean_r, m.mean_tol,
+                           m.std_r,  m.std_tol,
+                           m.count,
+                           placedExcl);
+            auto groupSpheres = sg.spheres();
+            allGroups.push_back(groupSpheres);
+            // add this mode’s spheres to the exclusion list
+            placedExcl.insert(placedExcl.end(),
+                              groupSpheres.begin(),
+                              groupSpheres.end());
         }
 
-        // Draw 2D projection (z ignored) onto image
+        // draw 2D projection
         cv::Mat img = cv::Mat::zeros(H, W, CV_8UC3);
-        for (auto &s : all) {
-            cv::circle(img, cv::Point(s.getX(), s.getY()), int(s.radius()),
-                       (&s==&all[0] ? g1Color : g2Color), -1);
+        for (size_t gi = 0; gi < allGroups.size(); ++gi) {
+            const auto &grp = allGroups[gi];
+            const auto &col = (*modesPtr)[gi].color;
+            for (auto &s : grp) {
+                cv::circle(img,
+                           cv::Point(s.getX(), s.getY()),
+                           int(std::ceil(s.radius())),
+                           col,
+                           -1);
+            }
+        }
+
+        std::vector<Sphere> all;
+        for (auto &grp : allGroups) {
+            all.insert(all.end(), grp.begin(), grp.end());
         }
 
         cv::utils::fs::createDirectory(outDir);
-        std::string imgPath = outDir + "/img_" + std::to_string(idx) + ".png";
-        cv::imwrite(imgPath, img);
-
+        std::string imgPath  = outDir + "/img_"     + std::to_string(idx) + ".png";
         std::string xyzrPath = outDir + "/spheres_" + std::to_string(idx) + ".xyzr";
+
+        cv::imwrite(imgPath, img);
         writeXYZR(xyzrPath, all);
 
         std::cout << "Done " << (idx+1) << "/" << totalTasks << std::endl;
@@ -411,34 +444,23 @@ int main(int argc, char* argv[]) {
     }
     std::string cfg = argv[2];
 
-    int W=0, H=0, D=0, numOut=0;
-    float g1Mean=0, g1MD=0, g1Std=0, g1SD=0;
-    int g1Count=0; cv::Scalar g1Color;
-    float g2Mean=0, g2MD=0, g2Std=0, g2SD=0;
-    int g2Count=0; cv::Scalar g2Color;
-    bool enableGroup2 = true;
+    int W = 0, H = 0, D = 0, numOut = 0, modeCount = 0;
+    std::vector<SphereMode> modes;
 
-    loadConfig(cfg,
-               W, H, D,
-               numOut,
-               g1Mean,g1MD, g1Std,g1SD, g1Count,g1Color,
-               g2Mean,g2MD, g2Std,g2SD, g2Count,g2Color,
-               enableGroup2);
-
+    loadConfig(cfg, W, H, D, numOut, modeCount, modes);
     for (int i = 0; i < numOut; ++i)
         taskQueue.push(i);
 
-    std::string exe = cv::utils::fs::getParent(argv[0]);
+    auto modesPtr = std::make_shared<std::vector<SphereMode>>(modes);
+    std::string exe    = cv::utils::fs::getParent(argv[0]);
     std::string outDir = exe + "/output";
 
     int threads = std::thread::hardware_concurrency();
     std::vector<std::thread> workers;
-    for (int i = 0; i < threads; ++i) {
+    for (int t = 0; t < threads; ++t) {
         workers.emplace_back(workerFunction,
-                             W,H,D,
-                             g1Mean,g1MD, g1Std,g1SD, g1Count,g1Color,
-                             g2Mean,g2MD, g2Std,g2SD, g2Count,g2Color,
-                             enableGroup2,
+                             W, H, D,
+                             modesPtr,
                              outDir, numOut);
     }
     condVar.notify_all();

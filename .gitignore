@@ -39,3 +39,6 @@ output/
 
 # Executable
 makecircles
+
+# venv
+/.venv

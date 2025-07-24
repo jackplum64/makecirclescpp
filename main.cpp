@@ -198,7 +198,7 @@ private:
 
         for(auto &s : sph){
             bool placed = false;
-            int attempts = 0, maxAtt=50000;
+            int attempts = 0, maxAtt=500000;
             while(!placed && attempts<maxAtt){
                 ++attempts;
                 int x = dx(gen), y=dy(gen), z=dz(gen);

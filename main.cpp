@@ -145,11 +145,35 @@ private:
 class CircleGroup
 {
 public:
-    CircleGroup(int width, int height, float mean, float mean_delta, float std_dev, float std_dev_delta, int count, std::vector<Circle> excludeCircles = {})
-        : width(width), height(height), mean(mean), mean_delta(mean_delta), std_dev(std_dev), std_dev_delta(std_dev_delta), count(count), grid(nullptr), excludeCircles(excludeCircles) {
+    CircleGroup(int width,
+                int height,
+                float mean,
+                float mean_delta,
+                float std_dev,
+                float std_dev_delta,
+                int count,
+                std::vector<Circle> excludeCircles = {})
+        : width(width),
+          height(height),
+          mean(mean),
+          mean_delta(mean_delta),
+          std_dev(std_dev),
+          std_dev_delta(std_dev_delta),
+          count(count),
+          maxRadius(0.0f),
+          calculatedMean(0.0f),
+          calculatedStdDev(0.0f),
+          excludeCircles(std::move(excludeCircles))
+    {
+        // if no circles requested, skip all packing logic
+        if (count <= 0) {
+            // leave circles empty, stats = 0
+            grid.reset();
+            return;
+        }
+
         bool goodPack = false;
         while (!goodPack) {
-            // Clear circles vector and reset grid
             circles.clear();
             grid.reset();
 

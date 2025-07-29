@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <iomanip>
 #include <sstream>
+#include <functional>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -20,16 +21,65 @@
 #include <opencv2/core/utils/filesystem.hpp>
 
 
+static bool saveGroupFlag = false;
+
+
+struct SphereMode {
+    float  mean_r;       // px
+    float  mean_tol;     // px
+    float  std_r;        // px
+    float  std_tol;      // px
+    int    count;
+    cv::Scalar color;    // BGR
+};
+
+
+enum class OverlapPolicy {
+    Full,     // everything allowed
+    Half,     // up to 50% penetration
+    None,     // no penetration (touching OK)
+    NoTouch   // no penetration and no touching
+};
+
+
+static OverlapPolicy stringToPolicy(const std::string &s) {
+    if      (s == "Full")    return OverlapPolicy::Full;
+    else if (s == "Half")    return OverlapPolicy::Half;
+    else if (s == "None")    return OverlapPolicy::None;
+    else if (s == "NoTouch") return OverlapPolicy::NoTouch;
+    throw std::invalid_argument("Unknown OverlapPolicy: " + s);
+}
+
+
+struct OverlapRules {
+    OverlapRules(int G)
+      : rules(G, std::vector<OverlapPolicy>(G, OverlapPolicy::None))
+    {}
+
+    void set(int g1, int g2, OverlapPolicy p) {
+        rules[g1][g2] = p;
+    }
+
+    OverlapPolicy get(int g1, int g2) const {
+        return rules[g1][g2];
+    }
+
+  private:
+    std::vector<std::vector<OverlapPolicy>> rules;
+};
+
 
 class Sphere {
 public:
-    Sphere(float radius_px, int x= -1, int y= -1, int z= -1)
-      : r(radius_px), x(x), y(y), z(z) {}
+    Sphere(float radius_px, int group_id, int x=-1, int y=-1, int z=-1)
+      : r(radius_px), groupId(group_id), x(x), y(y), z(z)
+    {}
 
     void setCenter(int xi, int yi, int zi) {
         x = xi;  y = yi;  z = zi;
     }
 
+    int   getGroupId() const { return groupId; }
     float radius() const { return r; }
     int   getX()    const { return x; }
     int   getY()    const { return y; }
@@ -43,6 +93,7 @@ public:
 
 private:
     float r;   // radius (px)
+    int   groupId;  // which mode / group this sphere belongs to
     int   x,y,z;
 };
 
@@ -119,11 +170,16 @@ public:
                 float mean_r, float mean_tol,
                 float std_r,  float std_tol,
                 int count,
+                int group_id,
+                const OverlapRules& overlapRules,
                 const std::vector<Sphere>& exclude = {})
       : W(W), H(H), D(D),
         mu(mean_r), muTol(mean_tol),
         sigma(std_r), sigmaTol(std_tol),
-        N(count), excl(exclude)
+        N(count),
+        groupId(group_id),
+        rules(overlapRules),
+        excl(exclude)
     {
         // keep drawing until stats are within tol, then place
         do {
@@ -147,6 +203,8 @@ private:
     float mu, muTol, sigma, sigmaTol;
     std::vector<Sphere> sph, excl;
     float meanGen, stdGen, maxR;
+    int groupId;                     // this group’s integer ID
+    const OverlapRules& rules;       // per-group overlap policies
 
     // 3D grid for overlap checks
     std::unique_ptr<Grid3D> grid;
@@ -162,7 +220,7 @@ private:
         for(int i=0; i<N; ++i){
             float r = dist(gen);
             if(r<0) r = -r;
-            sph.emplace_back(r);
+            sph.emplace_back(r, groupId);
             if(r>maxR) maxR = r;
         }
     }
@@ -204,32 +262,60 @@ private:
                 int x = dx(gen), y=dy(gen), z=dz(gen);
                 float r = s.radius();
                 // boundary
-                if(x<r||x>W-r||y<r||y>H-r||z<r||z>D-r) continue;
+                if (x < r || x > W - r ||
+                y < r || y > H - r ||
+                z < r || z > D - r)
+                continue;
 
-                if(overlaps(x,y,z,r)) continue;
+                if (checkOverlap(x, y, z, r)) continue;
                 if(overlapExcl(x,y,z,r)) continue;
 
                 s.setCenter(x,y,z);
                 grid->add(s);
                 placed = true;
             }
-            if(!placed){
-                std::cerr<<"Failed to place all spheres\n";
+            if (!placed) {
+                std::cerr << "Failed to place all spheres for group "
+                        << groupId << " after "
+                        << attempts << " attempts\n";
                 std::exit(1);
             }
         }
     }
 
     // any existing sphere within r1+r2?
-    bool overlaps(int x,int y,int z,float rnew) const {
+    bool checkOverlap(int x, int y, int z, float rnew) const {
         auto neigh = grid->getNeighbors(x,y,z,2);
-        for(auto &o: neigh){
-            float R = o.radius()+rnew;
-            float dx = o.getX()-x,
-                  dy = o.getY()-y,
-                  dz = o.getZ()-z;
-            if(dx*dx+dy*dy+dz*dz <= R*R)
-                return true;
+        for (auto &o : neigh) {
+            auto policy = rules.get(groupId, o.getGroupId());
+            if (policy == OverlapPolicy::Full)
+                continue;  // everything allowed
+
+            // compute center‐to‐center distance²
+            float dx = o.getX() - x,
+                  dy = o.getY() - y,
+                  dz = o.getZ() - z;
+            float d2   = dx*dx + dy*dy + dz*dz;
+            float Rsum = o.radius() + rnew;
+
+            switch (policy) {
+              case OverlapPolicy::Half: {
+                // allow up to 50% of the smaller radius
+                float allowPen = 0.5f * std::min(o.radius(), rnew);
+                float minD = Rsum - allowPen;
+                if (d2 < minD*minD) return true;  // too much overlap
+                break;
+              }
+              case OverlapPolicy::None:
+                // no penetration, but touching (d == Rsum) OK
+                if (d2 < Rsum*Rsum) return true;
+                break;
+              case OverlapPolicy::NoTouch:
+                // no penetration and no touching
+                if (d2 <= Rsum*Rsum) return true;
+                break;
+              default: break;
+            }
         }
         return false;
     }
@@ -252,23 +338,21 @@ private:
 };
 
 
-struct SphereMode {
-    float  mean_r;       // px
-    float  mean_tol;     // px
-    float  std_r;        // px
-    float  std_tol;      // px
-    int    count;
-    cv::Scalar color;    // BGR
-};
 
 
-void writeXYZR(const std::string& filepath, const std::vector<Sphere>& spheres) {
+
+void writeXYZR(const std::string& filepath,
+               bool saveGroup, 
+               const std::vector<Sphere>& spheres) {
     std::ofstream ofs(filepath);
     if (!ofs) {
         std::cerr << "Error: could not open '" << filepath << "' for writing\n";
         return;
     }
     for (const auto& s : spheres) {
+        if (saveGroup) {
+            ofs << s.getGroupId() + 1 << ' ';
+        }
         ofs
           << s.getX()    << ' '  // X coordinate (px)
           << s.getY()    << ' '  // Y coordinate (px)
@@ -310,12 +394,13 @@ void loadConfig(const std::string &filename,
                 int &W, int &H, int &D,
                 int &numOutputs,
                 int &modeCount,
-                std::vector<SphereMode> &modes)
+                std::vector<SphereMode> &modes,
+                OverlapRules &rules)
 {
     std::ifstream file(filename);
     if (!file) throw std::runtime_error("Cannot open config: " + filename);
 
-    // first pass: load simple scalars, including mode_count
+    // Read all key=val into a map
     std::map<std::string,std::string> kv;
     for (std::string line; std::getline(file, line); ) {
         auto trim = [](std::string &s){
@@ -327,16 +412,26 @@ void loadConfig(const std::string &filename,
         auto eq = line.find('=');
         std::string key = line.substr(0, eq);
         std::string val = line.substr(eq+1);
-        trim(key); trim(val);
+        trim(key);
+        
+        // — strip inline comments —
+        auto hashPos = val.find('#');
+        if (hashPos != std::string::npos) {
+            val = val.substr(0, hashPos);
+        }
+        trim(val);
+        
         kv[key] = val;
     }
 
+    // parse the usual scalars
     W          = std::stoi(kv["width"]);
     H          = std::stoi(kv["height"]);
     D          = std::stoi(kv["depth"]);
     numOutputs = std::stoi(kv["numOutputs"]);
     modeCount  = std::stoi(kv["mode_count"]);
 
+    // build modes
     modes.clear();
     modes.reserve(modeCount);
     for (int i = 1; i <= modeCount; ++i) {
@@ -346,12 +441,32 @@ void loadConfig(const std::string &filename,
         m.std_r    = std::stof(kv["mode" + std::to_string(i) + "_std_dev"]);
         m.std_tol  = std::stof(kv["mode" + std::to_string(i) + "_std_dev_delta"]);
         m.count    = std::stoi(kv["mode" + std::to_string(i) + "_count"]);
-        // load colors as R,G,B
+
         int r = std::stoi(kv["mode" + std::to_string(i) + "_color_r"]);
         int g = std::stoi(kv["mode" + std::to_string(i) + "_color_g"]);
         int b = std::stoi(kv["mode" + std::to_string(i) + "_color_b"]);
         m.color = cv::Scalar(b, g, r);
+
         modes.push_back(m);
+    }
+
+    // initialize rules matrix
+    rules = OverlapRules(modeCount);
+
+    // for every possible pair, look for "rule_i_j"
+    // build rules from 1‑based keys, but store internally at 0‑based indices
+    for(int i = 0; i < modeCount; ++i) {
+        for(int j = 0; j < modeCount; ++j) {
+            // bump i,j by +1 to match your config’s rule_1_1, rule_1_2, …
+            std::string key = "rule_"
+                        + std::to_string(i+1)
+                        + "_"
+                        + std::to_string(j+1);
+            auto it = kv.find(key);
+            if (it != kv.end()) {
+            rules.set(i, j, stringToPolicy(it->second));
+            }
+        }
     }
 }
 
@@ -370,6 +485,7 @@ bool stopThreads = false;
 
 void workerFunction(int W, int H, int D,
                     std::shared_ptr<std::vector<SphereMode>> modesPtr,
+                    const OverlapRules &rules,
                     const std::string &outDir,
                     int totalTasks)
 {
@@ -389,11 +505,14 @@ void workerFunction(int W, int H, int D,
         allGroups.reserve(modesPtr->size());
 
         // sample each mode in turn, excluding previously placed
+        int gi = 0;
         for (auto &m : *modesPtr) {
             SphereGroup sg(W, H, D,
                            m.mean_r, m.mean_tol,
                            m.std_r,  m.std_tol,
                            m.count,
+                           gi,
+                           rules,
                            placedExcl);
             auto groupSpheres = sg.spheres();
             allGroups.push_back(groupSpheres);
@@ -401,6 +520,7 @@ void workerFunction(int W, int H, int D,
             placedExcl.insert(placedExcl.end(),
                               groupSpheres.begin(),
                               groupSpheres.end());
+            ++gi;
         }
 
         // draw 2D projection
@@ -427,7 +547,7 @@ void workerFunction(int W, int H, int D,
         std::string xyzrPath = outDir + "/spheres_" + std::to_string(idx) + ".xyzr";
 
         cv::imwrite(imgPath, img);
-        writeXYZR(xyzrPath, all);
+        writeXYZR(xyzrPath, saveGroupFlag, all);
 
         std::cout << "Done " << (idx+1) << "/" << totalTasks << std::endl;
         if (idx+1 == totalTasks) {
@@ -438,16 +558,32 @@ void workerFunction(int W, int H, int D,
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 3 || std::string(argv[1]) != "-config") {
-        std::cerr << "Usage: " << argv[0] << " -config <path>\n";
+    std::string cfg;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--config" && i+1 < argc) {
+            cfg = argv[++i];
+        }
+        else if (a == "--savegroup") {
+            saveGroupFlag = true;
+        }
+        else {
+            std::cerr << "Usage: " << argv[0]
+                      << " --config <path> [--savegroup]\n";
+            return 1;
+        }
+    }
+    if (cfg.empty()) {
+        std::cerr << "Usage: " << argv[0]
+                  << " --config <path> [--savegroup]\n";
         return 1;
     }
-    std::string cfg = argv[2];
 
     int W = 0, H = 0, D = 0, numOut = 0, modeCount = 0;
     std::vector<SphereMode> modes;
+    OverlapRules     rules(0);  // will be resized in loadConfig
 
-    loadConfig(cfg, W, H, D, numOut, modeCount, modes);
+    loadConfig(cfg, W, H, D, numOut, modeCount, modes, rules);
     for (int i = 0; i < numOut; ++i)
         taskQueue.push(i);
 
@@ -461,6 +597,7 @@ int main(int argc, char* argv[]) {
         workers.emplace_back(workerFunction,
                              W, H, D,
                              modesPtr,
+                             std::cref(rules),
                              outDir, numOut);
     }
     condVar.notify_all();

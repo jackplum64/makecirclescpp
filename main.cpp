@@ -217,6 +217,8 @@ private:
     std::vector<Circle> circles;
     std::unique_ptr<Grid> grid;
     std::vector<Circle> excludeCircles;
+    bool hasGrid() const noexcept { return static_cast<bool>(grid); }
+
 
     void generateCircles() {
         std::random_device rd;
@@ -351,6 +353,24 @@ private:
 };
 
 
+void writeXYR(const std::string& filepath, const std::vector<Circle>& circles) {
+    std::ofstream ofs(filepath);
+    if (!ofs) {
+        std::cerr << "Error: could not open '" << filepath << "' for writing\n";
+        return;
+    }
+    ofs.setf(std::ios::fixed);
+    ofs << std::setprecision(3);
+
+    for (const auto& c : circles) {
+        ofs << c.getX() << ' '    // x [px]
+            << c.getY() << ' '    // y [px]
+            << c.getRadius()      // r [px]
+            << '\n';
+    }
+}
+
+
 
 
 void saveImage(const cv::Mat& image, const std::string& outputDir, int index) {
@@ -464,41 +484,64 @@ std::mutex queueMutex;
 std::condition_variable condVar;
 bool stopThreads = false;
 
-void workerFunction(int width, int height, float g1Mean, float g1Mean_delta, float g1Std_dev, float g1Std_dev_delta, int g1Count, cv::Scalar g1Color,
-                    float g2Mean, float g2Mean_delta, float g2Std_dev, float g2Std_dev_delta, int g2Count, cv::Scalar g2Color, const std::string& outputDir, int totalTasks) {
+void workerFunction(int width, int height,
+                    float g1Mean, float g1Mean_delta, float g1Std_dev, float g1Std_dev_delta, int g1Count, cv::Scalar g1Color,
+                    float g2Mean, float g2Mean_delta, float g2Std_dev, float g2Std_dev_delta, int g2Count, cv::Scalar g2Color,
+                    const std::string& outputDir, int totalTasks)
+{
     while (true) {
         int taskIndex;
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            condVar.wait(lock, []{ return !taskQueue.empty() || stopThreads; });
-
-            if (stopThreads && taskQueue.empty()) {
-                return;
-            }
-
+            condVar.wait(lock, [] { return !taskQueue.empty() || stopThreads; });
+            if (stopThreads && taskQueue.empty()) return;
             taskIndex = taskQueue.front();
             taskQueue.pop();
         }
 
-        // Generate the circles and images
+        // Group 1 (always)
         CircleGroup g1(width, height, g1Mean, g1Mean_delta, g1Std_dev, g1Std_dev_delta, g1Count);
         const std::vector<Circle>& g1Circles = g1.getCircles();
-        CircleGroup g2(width, height, g2Mean, g2Mean_delta, g2Std_dev, g2Std_dev_delta, g2Count, g1Circles);
-        const std::vector<Circle>& g2Circles = g2.getCircles();
 
         cv::Mat g1Image = cv::Mat::zeros(height, width, CV_8UC3);
-        cv::Mat g2Image = cv::Mat::zeros(height, width, CV_8UC3);
         drawCircles(g1Image, g1Circles, g1Color);
-        drawCircles(g2Image, g2Circles, g2Color);
+
+        // Group 2 (only if requested)
+        std::vector<Circle> allCircles;
+        allCircles.reserve(g1Circles.size() + static_cast<size_t>(std::max(0, g2Count)));
 
         cv::Mat finalImage;
-        cv::addWeighted(g1Image, 1, g2Image, 1, 0, finalImage, -1);
+        if (g2Count > 0) {
+            CircleGroup g2(width, height, g2Mean, g2Mean_delta, g2Std_dev, g2Std_dev_delta, g2Count, g1Circles);
+            const std::vector<Circle>& g2Circles = g2.getCircles();
+
+            cv::Mat g2Image = cv::Mat::zeros(height, width, CV_8UC3);
+            drawCircles(g2Image, g2Circles, g2Color);
+
+            cv::addWeighted(g1Image, 1.0, g2Image, 1.0, 0.0, finalImage, -1);
+
+            allCircles.insert(allCircles.end(), g1Circles.begin(), g1Circles.end());
+            allCircles.insert(allCircles.end(), g2Circles.begin(), g2Circles.end());
+        } else {
+            // No Group 2: just use Group 1 image and circles
+            finalImage = g1Image;
+            allCircles.insert(allCircles.end(), g1Circles.begin(), g1Circles.end());
+        }
+
         saveImage(finalImage, outputDir, taskIndex);
+
+        // Save x,y,r (px)
+        const std::string base = outputDir + "/circles_" + std::to_string(taskIndex);
+        writeXYR(base + ".xyr", allCircles);
 
         std::cout << "Finished " << taskIndex + 1 << "/" << totalTasks << std::endl;
 
         if (taskIndex + 1 == totalTasks) {
-            stopThreads = true;
+            // signal everyone to exit cleanly
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                stopThreads = true;
+            }
             condVar.notify_all();
         }
     }
